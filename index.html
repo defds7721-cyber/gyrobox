@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Коробка</title>
+<style>
+:root {
+  color-scheme: light;
+  --bg: #FFFFFF;
+  --text: #2B2F36;
+  --line: #E3E6EA;
+  --accent: #1F5FD6;
+  --accent-hover: #184CB0;
+  --link: #1F5FD6;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #16181C; --text: #E6E8EB; --line: #2C3036;
+    --accent: #2F6BE0; --accent-hover: #3D7BF2; --link: #6EA2FF;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #16181C; --text: #E6E8EB; --line: #2C3036;
+  --accent: #2F6BE0; --accent-hover: #3D7BF2; --link: #6EA2FF;
+}
+html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+body { font: 15px/1.4 var(--font); color: var(--text); touch-action: none; -webkit-user-select: none; user-select: none; }
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+canvas.drag { cursor: grabbing; }
+#perm {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  height: 44px; padding: 0 20px; border: 0; border-radius: 4px;
+  background: var(--accent); color: #fff; font: 500 15px var(--font); cursor: pointer;
+}
+#perm:hover { background: var(--accent-hover); }
+#perm:focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+#perm[hidden] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<button id="perm" hidden>Включить гироскоп</button>
+<script>
+'use strict';
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const perm = document.getElementById('perm');
+
+let W = 0, H = 0, dpr = 1;
+const G = 2600;                    // px/s² при полном наклоне
+const grav = { x: 0, y: G };       // по умолчанию вниз, пока нет датчика
+const box = { x: 0, y: 0, vx: 0, vy: 0, a: 0.3, w: 0, s: 0 };
+let m = 1, I = 1;
+
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 3);
+  W = innerWidth; H = innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  const s = Math.round(Math.min(W, H) * 0.24);
+  if (!box.s) { box.x = W / 2; box.y = H * 0.25; }
+  box.s = s; I = m * (s * s + s * s) / 12;
+  box.x = Math.min(Math.max(box.x, s), W - s);
+  box.y = Math.min(Math.max(box.y, s), H - s);
+  wake();
+}
+
+// --- датчик ---
+function screenAngle() {
+  return (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+}
+function onOrient(e) {
+  const b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+  // вектор тяжести в осях экрана в портретной ориентации (x вправо, y вниз)
+  const dx = Math.cos(b) * Math.sin(g), dy = Math.sin(b);
+  let sx, sy;
+  switch (((screenAngle() % 360) + 360) % 360) {
+    case 90:  sx = dy;  sy = -dx; break;
+    case 180: sx = -dx; sy = -dy; break;
+    case 270: sx = -dy; sy = dx;  break;
+    default:  sx = dx;  sy = dy;
+  }
+  const nx = sx * G, ny = sy * G;
+  if (Math.abs(nx - grav.x) + Math.abs(ny - grav.y) > G * 0.01) wake();
+  grav.x = nx; grav.y = ny;
+}
+let sensed = false;
+addEventListener('deviceorientation', e => {
+  if (e.beta == null) return;
+  if (!sensed) { sensed = true; perm.hidden = true; }
+  onOrient(e);
+});
+
+// iOS не шлёт событий без разрешения; кнопку показываем, только если их так и нет
+if (typeof DeviceOrientationEvent !== 'undefined' &&
+    typeof DeviceOrientationEvent.requestPermission === 'function' &&
+    matchMedia('(pointer: coarse)').matches) {
+  setTimeout(() => { if (!sensed) perm.hidden = false; }, 800);
+  perm.addEventListener('click', async () => {
+    try { await DeviceOrientationEvent.requestPermission(); } catch (_) {}
+  });
+}
+
+// --- перетаскивание ---
+let grab = null;  // { lx, ly, px, py, id }
+let touched = false;  // vibrate разрешён только после касания
+addEventListener('pointerdown', () => { touched = true; }, true);
+function toLocal(px, py) {
+  const dx = px - box.x, dy = py - box.y, c = Math.cos(-box.a), s = Math.sin(-box.a);
+  return [dx * c - dy * s, dx * s + dy * c];
+}
+cv.addEventListener('pointerdown', e => {
+  const [lx, ly] = toLocal(e.clientX, e.clientY), h = box.s / 2;
+  if (Math.abs(lx) > h || Math.abs(ly) > h) return;
+  grab = { lx, ly, px: e.clientX, py: e.clientY, id: e.pointerId };
+  cv.setPointerCapture(e.pointerId); cv.classList.add('drag'); wake();
+});
+cv.addEventListener('pointermove', e => {
+  if (grab && e.pointerId === grab.id) { grab.px = e.clientX; grab.py = e.clientY; }
+});
+function release(e) {
+  if (grab && e.pointerId === grab.id) { grab = null; cv.classList.remove('drag'); }
+}
+cv.addEventListener('pointerup', release);
+cv.addEventListener('pointercancel', release);
+
+// --- физика ---
+const REST = 0.35, MU = 0.5, SUB = 6;
+
+function corners() {
+  const h = box.s / 2, c = Math.cos(box.a), s = Math.sin(box.a), out = [];
+  for (const [ux, uy] of [[-h, -h], [h, -h], [h, h], [-h, h]])
+    out.push([ux * c - uy * s, ux * s + uy * c]);
+  return out;
+}
+
+function impulse(rx, ry, nx, ny, e) {
+  let vx = box.vx - box.w * ry, vy = box.vy + box.w * rx;
+  const vn = vx * nx + vy * ny;
+  if (vn >= 0) return 0;
+  const rn = rx * ny - ry * nx;
+  const j = -(1 + e) * vn / (1 / m + rn * rn / I);
+  box.vx += j * nx / m; box.vy += j * ny / m; box.w += rn * j / I;
+  // трение
+  const tx = -ny, ty = nx;
+  vx = box.vx - box.w * ry; vy = box.vy + box.w * rx;
+  const vt = vx * tx + vy * ty, rt = rx * ty - ry * tx;
+  let jt = -vt / (1 / m + rt * rt / I);
+  jt = Math.max(-MU * j, Math.min(MU * j, jt));
+  box.vx += jt * tx / m; box.vy += jt * ty / m; box.w += rt * jt / I;
+  return -vn;
+}
+
+let hit = 0;
+function step(dt) {
+  let ax = grav.x, ay = grav.y, al = 0;
+  if (grab) {
+    const c = Math.cos(box.a), s = Math.sin(box.a);
+    const rx = grab.lx * c - grab.ly * s, ry = grab.lx * s + grab.ly * c;
+    const vx = box.vx - box.w * ry, vy = box.vy + box.w * rx;
+    const k = 900, d = 2 * Math.sqrt(k) * 0.9;
+    const fx = k * (grab.px - box.x - rx) - d * vx;
+    const fy = k * (grab.py - box.y - ry) - d * vy;
+    ax += fx / m; ay += fy / m; al = (rx * fy - ry * fx) / I;
+    box.w *= 0.995;
+  }
+  box.vx += ax * dt; box.vy += ay * dt; box.w += al * dt;
+  box.x += box.vx * dt; box.y += box.vy * dt; box.a += box.w * dt;
+
+  const walls = [[0, -1, H], [0, 1, 0], [-1, 0, W], [1, 0, 0]]; // нормаль внутрь, линия
+  for (const [nx, ny, L] of walls) {
+    let deepest = 0;
+    for (const [rx, ry] of corners()) {
+      const cx = box.x + rx, cy = box.y + ry;
+      const pen = nx ? (nx > 0 ? L - cx : cx - L) : (ny > 0 ? L - cy : cy - L);
+      if (pen <= 0) continue;
+      deepest = Math.max(deepest, pen);
+      const vn = -((box.vx - box.w * ry) * nx + (box.vy + box.w * rx) * ny);
+      hit = Math.max(hit, impulse(rx, ry, nx, ny, vn > 120 ? REST : 0));
+    }
+    if (deepest) { box.x += nx * deepest * 0.9; box.y += ny * deepest * 0.9; }
+  }
+}
+
+// --- рисование ---
+function draw() {
+  const css = getComputedStyle(document.documentElement);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = css.getPropertyValue('--bg');
+  ctx.fillRect(0, 0, W, H);
+
+  const s = box.s, h = s / 2, r = Math.max(2, s * 0.02);
+  ctx.save();
+  ctx.translate(box.x, box.y); ctx.rotate(box.a);
+  ctx.fillStyle = '#C8955A';
+  ctx.strokeStyle = '#8A5F31';
+  ctx.lineWidth = Math.max(1.5, s * 0.012);
+  ctx.beginPath(); ctx.roundRect(-h, -h, s, s, r); ctx.fill(); ctx.stroke();
+  // клапаны
+  ctx.beginPath(); ctx.moveTo(-h, -h * 0.02); ctx.lineTo(h, -h * 0.02); ctx.stroke();
+  // скотч
+  ctx.fillStyle = 'rgba(236, 206, 150, 0.85)';
+  ctx.fillRect(-s * 0.09, -h, s * 0.18, s);
+  ctx.strokeStyle = 'rgba(138, 95, 49, 0.35)';
+  ctx.strokeRect(-s * 0.09, -h, s * 0.18, s);
+  // значок «верх»
+  ctx.strokeStyle = '#6E4A24'; ctx.lineWidth = Math.max(1.5, s * 0.018);
+  const ix = h * 0.55, iy = h * 0.5, u = s * 0.06;
+  for (const off of [-u * 0.7, u * 0.7]) {
+    ctx.beginPath();
+    ctx.moveTo(ix + off, iy + u); ctx.lineTo(ix + off, iy - u);
+    ctx.moveTo(ix + off - u * 0.5, iy - u * 0.4); ctx.lineTo(ix + off, iy - u); ctx.lineTo(ix + off + u * 0.5, iy - u * 0.4);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// --- цикл с засыпанием ---
+let running = false, last = 0, still = 0;
+function wake() { still = 0; if (!running) { running = true; last = performance.now(); requestAnimationFrame(frame); } }
+function frame(t) {
+  const dt = Math.min((t - last) / 1000, 1 / 30); last = t;
+  hit = 0;
+  for (let i = 0; i < SUB; i++) step(dt / SUB);
+  if (hit > 900 && touched && navigator.vibrate) navigator.vibrate(Math.min(30, hit / 60));
+  draw();
+  const calm = !grab && Math.hypot(box.vx, box.vy) < 4 && Math.abs(box.w) < 0.05;
+  still = calm ? still + 1 : 0;
+  if (still > 40) { running = false; return; }
+  requestAnimationFrame(frame);
+}
+
+addEventListener('resize', resize);
+matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => { draw(); });
+resize();
+</script>
+</body>
+</html>
